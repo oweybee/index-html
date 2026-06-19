@@ -1,0 +1,16 @@
+{
+  "name": "eve-engine",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "ingest": "node ingestOdds.js",
+    "betfair": "node betfairIngest.js",
+    "compute": "node computeValues.js",
+    "test": "node --test engine.test.js"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.39.0",
+    "node-fetch": "^3.3.2"
+  }
+}

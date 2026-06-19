@@ -1,0 +1,36 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  background-color: #0d0f0e;
+  color: #e8ede8;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Signal glow — +EV green accent */
+.signal-glow {
+  box-shadow: 0 0 14px rgba(57, 255, 110, 0.25);
+}
+
+/* Ruby glow — exceptional signal */
+.ruby-glow {
+  box-shadow: 0 0 16px rgba(220, 38, 38, 0.30);
+}
+
+/* Thin scrollbar for betslip */
+.betslip-scroll::-webkit-scrollbar {
+  width: 4px;
+}
+.betslip-scroll::-webkit-scrollbar-track {
+  background: #141714;
+}
+.betslip-scroll::-webkit-scrollbar-thumb {
+  background: #2a2f2a;
+  border-radius: 2px;
+}
