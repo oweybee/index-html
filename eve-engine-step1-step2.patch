@@ -1,0 +1,484 @@
+diff --git a/betfairIngest.js b/betfairIngest.js
+index 5bfbe84..79e87c7 100644
+--- a/betfairIngest.js
++++ b/betfairIngest.js
+@@ -3,8 +3,8 @@
+  *
+  * Authenticates with Betfair, fetches upcoming FIFA World Cup events,
+  * pulls Match Odds (1X2), Over/Under 2.5 Goals, and Both Teams to Score
+- * market prices, then writes them into Supabase.
++ * Authenticates with Betfair, fetches upcoming Premier League and EFL Championship
++ * events, pulls Match Odds (1X2) prices, then writes them into Supabase.
++ * Scope: Match Winner (1X2) only.
+  *
+  * Usage:
+  *   node betfairIngest.js             — live run
+@@ -22,8 +22,12 @@ const DRY_RUN  = process.argv.includes('--dry-run');
+ const SUPABASE_URL = process.env.SUPABASE_URL;
+ const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
+ 
+-// FIFA World Cup competition ID on Betfair
+-const WORLD_CUP_COMPETITION_ID = '12469077';
++// Premier League and EFL Championship competition IDs on Betfair
++const COMPETITIONS = [
++  { id: '10932509', leagueName: 'Premier League',   country: 'England' },
++  { id: '7129730',  leagueName: 'EFL Championship', country: 'England' },
++];
+ 
+ // Minimum price movement to bother inserting a new row
+ const MIN_PRICE_MOVEMENT = 0.01;
+@@ -170,23 +174,25 @@ async function betfairRpc(sessionToken, method, params) {
+ }
+ 
+ // ---------------------------------------------------------------------------
+-// 3. List upcoming World Cup events
++// 3. List upcoming events for a competition
+ // ---------------------------------------------------------------------------
+ 
+-async function listWorldCupEvents(sessionToken) {
+-  console.log('[events] fetching FIFA World Cup events...');
++async function listEnglishLeagueEvents(sessionToken, competitionId, leagueName) {
++  console.log(`[events] fetching ${leagueName} events...`);
+ 
+   const result = await betfairRpc(sessionToken, 'listEvents', {
+     filter: {
+       eventTypeIds:   ['1'],           // Soccer
+-      competitionIds: [WORLD_CUP_COMPETITION_ID],
++      competitionIds: [competitionId],
+     },
+   });
+ 
+   const events = (result ?? []).map(e => ({
+     betfairEventId: e.event.id,
+     name:           e.event.name,
+     openDate:       e.event.openDate,
+     countryCode:    e.event.countryCode,
+   }));
+ 
+-  console.log(`[events] → ${events.length} events found`);
++  console.log(`[events] → ${events.length} events found for ${leagueName}`);
+   for (const ev of events) {
+     console.log(`  ${ev.betfairEventId}  ${ev.name}  (${ev.openDate})`);
+   }
+@@ -441,10 +447,9 @@ function getSupabase() {
+   return createClient(SUPABASE_URL, SUPABASE_KEY);
+ }
+ 
+-async function upsertLeague(supabase) {
++async function upsertLeague(supabase, { leagueName, country }) {
+   const { data, error } = await supabase
+     .from('leagues')
+-    .upsert({ name: 'FIFA World Cup', country: 'International' }, { onConflict: 'name' })
++    .upsert({ name: leagueName, country }, { onConflict: 'name' })
+     .select('id')
+     .single();
+   if (error) throw new Error(`upsertLeague: ${error.message}`);
+@@ -467,8 +472,8 @@ async function upsertTeam(supabase, name) {
+ 
+ /**
+  * Finds an existing match by fuzzy team name matching on the same day.
+- * Betfair team names often differ from The Odds API (e.g. "United States" vs "USA"),
+- * so we fetch all World Cup matches on that date and score by name similarity.
++ * Betfair team names often differ from The Odds API (e.g. "Man City" vs "Manchester City"),
++ * so we fetch all matches on that date and score by name similarity.
+  */
+ async function findOrCreateMatch(supabase, { homeTeam, awayTeam, leagueId, kickoffAt, externalId }) {
+   const kickoffDate = kickoffAt.slice(0, 10);
+@@ -571,7 +576,8 @@ async function ingest() {
+   console.log(`\n[betfairIngest] starting ${DRY_RUN ? '(DRY RUN) ' : ''}at ${new Date().toISOString()}`);
+ 
+   // Authenticate
+-  const sessionToken = await authenticate();
++  // Authenticate once — token is valid for ~8h
++  const sessionToken = await authenticate();
+ 
+-  // Fetch events
+-  const events = await listWorldCupEvents(sessionToken);
+-  if (!events.length) {
+-    console.log('[betfairIngest] no events found — exiting');
+-    return;
+-  }
+-
+-  const supabase = DRY_RUN ? null : getSupabase();
+-  const leagueId = DRY_RUN ? 'dry-league' : await upsertLeague(supabase);
+-
+-  const summary = { events: 0, marketsProcessed: 0, oddsInserted: 0, errors: 0 };
+-  const fetchedAt = new Date().toISOString();
+-
+-  for (const event of events) {
+-    console.log(`\n[event] ${event.name} (${event.betfairEventId})`);
+-
+-    // List markets for this event
+-    let markets;
+-    try {
+-      markets = await listMarketsForEvent(sessionToken, event.betfairEventId);
+-    } catch (err) {
+-      console.error(`  [error] listMarkets: ${err.message}`);
+-      summary.errors++;
+-      continue;
+-    }
+-
+-    if (!markets.length) {
+-      console.log('  no markets found');
+-      continue;
+-    }
+-
+-    console.log(`  markets: ${markets.map(m => m.marketName).join(', ')}`);
+-
+-    // Fetch prices for all markets in one call
+-    const marketIds = markets.map(m => m.marketId);
+-    let books;
+-    try {
+-      books = await fetchPrices(sessionToken, marketIds);
+-    } catch (err) {
+-      console.error(`  [error] fetchPrices: ${err.message}`);
+-      summary.errors++;
+-      continue;
+-    }
+-
+-    // Build a map: marketId → book
+-    const bookMap = {};
+-    for (const b of books) bookMap[b.marketId] = b;
+-
+-    // Derive team names from event name ("Austria v Jordan" → home/away)
+-    const nameParts = event.name.split(' v ');
+-    const homeTeam = nameParts[0]?.trim() ?? 'Home';
+-    const awayTeam = nameParts[1]?.trim() ?? 'Away';
+-
+-    // Parse each market
+-    let matchOddsResult  = null;
+-    let overUnderResult  = null;
+-    let bttsResult       = null;
+-    let bookingsResult   = null;
+-    let cornersResult    = null;
+-
+-    for (const mkt of markets) {
+-      const book = bookMap[mkt.marketId];
+-      if (!book) continue;
+-      const runners = mkt.runners ?? [];
+-
+-      if (/^match odds$/i.test(mkt.marketName)) {
+-        matchOddsResult = parseMatchOdds(book, runners, homeTeam, awayTeam);
+-        if (matchOddsResult) {
+-          console.log(`  [h2h]    H(${homeTeam}):${matchOddsResult.homeOdds} D:${matchOddsResult.drawOdds} A(${awayTeam}):${matchOddsResult.awayOdds}`);
+-        }
+-      } else if (/^over\/under 2\.5 goals$/i.test(mkt.marketName)) {
+-        overUnderResult = parseOverUnder(book, runners);
+-        if (overUnderResult) {
+-          console.log(`  [totals] O:${overUnderResult.overOdds} U:${overUnderResult.underOdds}`);
+-        }
+-      } else if (/^both teams to score\??$/i.test(mkt.marketName)) {
+-        bttsResult = parseBTTS(book, runners);
+-        if (bttsResult) {
+-          console.log(`  [btts]   Y:${bttsResult.yesOdds} N:${bttsResult.noOdds}`);
+-        }
+-      } else if (/bookings?\s+points?/i.test(mkt.marketName)) {
+-        bookingsResult = parseBookings(book, runners);
+-        if (bookingsResult) {
+-          console.log(`  [cards]  line:${bookingsResult.line} O:${bookingsResult.overOdds} U:${bookingsResult.underOdds}`);
+-        }
+-      } else if (/total corners?|asian corners?/i.test(mkt.marketName)) {
+-        cornersResult = parseCorners(book, runners);
+-        if (cornersResult) {
+-          console.log(`  [corners] line:${cornersResult.line} O:${cornersResult.overOdds} U:${cornersResult.underOdds}`);
+-        }
+-      }
+-    }
+-
+-    // Need at minimum the h2h market to identify teams
+-    if (!matchOddsResult) {
+-      console.log('  [skip] no parseable Match Odds market');
+-      continue;
+-    }
+-
+-    // Upsert match + teams
+-    let matchId;
+-    try {
+-      if (DRY_RUN) {
+-        matchId = 'dry-match';
+-      } else {
+-        matchId = await findOrCreateMatch(supabase, {
+-          externalId: `bf_${event.betfairEventId}`,
+-          homeTeam:   matchOddsResult.homeTeam,
+-          awayTeam:   matchOddsResult.awayTeam,
+-          leagueId,
+-          kickoffAt:  event.openDate,
+-        });
+-      }
+-    } catch (err) {
+-      console.error(`  [error] upsert match: ${err.message}`);
+-      summary.errors++;
+-      continue;
+-    }
+-
+-    // Insert h2h odds
+-    const h2hRow = {
+-      bookmaker:  'betfair_ex_uk',
+-      market:     'h2h',
+-      home_odds:  matchOddsResult.homeOdds,
+-      draw_odds:  matchOddsResult.drawOdds,
+-      away_odds:  matchOddsResult.awayOdds,
+-      fetched_at: fetchedAt,
+-    };
+-    if (await insertOddsRow(supabase, matchId, h2hRow)) summary.oddsInserted++;
+-    summary.marketsProcessed++;
+-
+-    // Insert totals odds
+-    if (overUnderResult) {
+-      const totalsRow = {
+-        bookmaker:   'betfair_ex_uk',
+-        market:      'totals',
+-        home_odds:   overUnderResult.overOdds,    // Over → home_odds
+-        draw_odds:   null,
+-        away_odds:   overUnderResult.underOdds,   // Under → away_odds
+-        market_line: overUnderResult.marketLine,
+-        fetched_at:  fetchedAt,
+-      };
+-      if (await insertOddsRow(supabase, matchId, totalsRow)) summary.oddsInserted++;
+-      summary.marketsProcessed++;
+-    }
+-
+-    // Insert BTTS odds
+-    if (bttsResult) {
+-      const bttsRow = {
+-        bookmaker:  'betfair_ex_uk',
+-        market:     'btts',
+-        home_odds:  bttsResult.yesOdds,   // Yes → home_odds
+-        draw_odds:  null,
+-        away_odds:  bttsResult.noOdds,    // No  → away_odds
+-        fetched_at: fetchedAt,
+-      };
+-      if (await insertOddsRow(supabase, matchId, bttsRow)) summary.oddsInserted++;
+-      summary.marketsProcessed++;
+-    }
+-
+-    // Insert bookings (card points) odds
+-    if (bookingsResult) {
+-      const bookingsRow = {
+-        bookmaker:   'betfair_ex_uk',
+-        market:      'bookings',
+-        home_odds:   bookingsResult.overOdds,   // Over → home_odds
+-        draw_odds:   null,
+-        away_odds:   bookingsResult.underOdds,  // Under → away_odds
+-        market_line: bookingsResult.line,
+-        fetched_at:  fetchedAt,
+-      };
+-      if (await insertOddsRow(supabase, matchId, bookingsRow)) summary.oddsInserted++;
+-      summary.marketsProcessed++;
+-    }
+-
+-    // Insert corners odds
+-    if (cornersResult) {
+-      const cornersRow = {
+-        bookmaker:   'betfair_ex_uk',
+-        market:      'corners',
+-        home_odds:   cornersResult.overOdds,   // Over → home_odds
+-        draw_odds:   null,
+-        away_odds:   cornersResult.underOdds,  // Under → away_odds
+-        market_line: cornersResult.line,
+-        fetched_at:  fetchedAt,
+-      };
+-      if (await insertOddsRow(supabase, matchId, cornersRow)) summary.oddsInserted++;
+-      summary.marketsProcessed++;
+-    }
+-
+-    summary.events++;
+-    await sleep(100); // gentle rate limiting
+-  }
++  const supabase  = DRY_RUN ? null : getSupabase();
++  const summary   = { events: 0, marketsProcessed: 0, oddsInserted: 0, errors: 0 };
++  const fetchedAt = new Date().toISOString();
++
++  for (const competition of COMPETITIONS) {
++    console.log(`\n[competition] ${competition.leagueName}`);
++
++    let events;
++    try {
++      events = await listEnglishLeagueEvents(sessionToken, competition.id, competition.leagueName);
++    } catch (err) {
++      console.error(`  [error] listEvents: ${err.message}`);
++      summary.errors++;
++      continue;
++    }
++
++    if (!events.length) {
++      console.log(`  no events found for ${competition.leagueName}`);
++      continue;
++    }
++
++    const leagueId = DRY_RUN ? 'dry-league' : await upsertLeague(supabase, competition);
++
++    for (const event of events) {
++      console.log(`\n[event] ${event.name} (${event.betfairEventId})`);
++
++      let markets;
++      try {
++        markets = await listMarketsForEvent(sessionToken, event.betfairEventId);
++      } catch (err) {
++        console.error(`  [error] listMarkets: ${err.message}`);
++        summary.errors++;
++        continue;
++      }
++
++      if (!markets.length) {
++        console.log('  no markets found');
++        continue;
++      }
++
++      const marketIds = markets.map(m => m.marketId);
++      let books;
++      try {
++        books = await fetchPrices(sessionToken, marketIds);
++      } catch (err) {
++        console.error(`  [error] fetchPrices: ${err.message}`);
++        summary.errors++;
++        continue;
++      }
++
++      const bookMap = {};
++      for (const b of books) bookMap[b.marketId] = b;
++
++      // Derive team names from event name ("Arsenal v Chelsea" → home/away)
++      const nameParts = event.name.split(' v ');
++      const homeTeam  = nameParts[0]?.trim() ?? 'Home';
++      const awayTeam  = nameParts[1]?.trim() ?? 'Away';
++
++      // Find and parse the Match Odds (h2h) market only
++      let matchOddsResult = null;
++      for (const mkt of markets) {
++        const book = bookMap[mkt.marketId];
++        if (!book) continue;
++        if (/^match odds$/i.test(mkt.marketName)) {
++          matchOddsResult = parseMatchOdds(book, mkt.runners ?? [], homeTeam, awayTeam);
++          if (matchOddsResult) {
++            console.log(`  [h2h] H(${homeTeam}):${matchOddsResult.homeOdds} D:${matchOddsResult.drawOdds} A(${awayTeam}):${matchOddsResult.awayOdds}`);
++          }
++          break;
++        }
++      }
++
++      if (!matchOddsResult) {
++        console.log('  [skip] no parseable Match Odds market');
++        continue;
++      }
++
++      let matchId;
++      try {
++        if (DRY_RUN) {
++          matchId = 'dry-match';
++        } else {
++          matchId = await findOrCreateMatch(supabase, {
++            externalId: `bf_${event.betfairEventId}`,
++            homeTeam:   matchOddsResult.homeTeam,
++            awayTeam:   matchOddsResult.awayTeam,
++            leagueId,
++            kickoffAt:  event.openDate,
++          });
++        }
++      } catch (err) {
++        console.error(`  [error] upsert match: ${err.message}`);
++        summary.errors++;
++        continue;
++      }
++
++      const h2hRow = {
++        bookmaker:  'betfair_ex_uk',
++        market:     'h2h',
++        home_odds:  matchOddsResult.homeOdds,
++        draw_odds:  matchOddsResult.drawOdds,
++        away_odds:  matchOddsResult.awayOdds,
++        fetched_at: fetchedAt,
++      };
++      if (await insertOddsRow(supabase, matchId, h2hRow)) summary.oddsInserted++;
++      summary.marketsProcessed++;
++      summary.events++;
++
++      await sleep(100);
++    }
++  }
+ 
+   console.log('\n[betfairIngest] done:', summary);
+   return summary;
+@@ -789,4 +725,4 @@ if (require.main === module) {
+   });
+ }
+ 
+-module.exports = { ingest, authenticate, parseMatchOdds, parseOverUnder, parseBTTS, parseBookings, parseCorners };
++module.exports = { ingest, authenticate, parseMatchOdds, parseOverUnder, parseBTTS, parseBookings, parseCorners, listEnglishLeagueEvents };
+diff --git a/gradeResults.js b/gradeResults.js
+index f087de4..14affc2 100644
+--- a/gradeResults.js
++++ b/gradeResults.js
+@@ -23,8 +23,8 @@ const SUPABASE_URL = process.env.SUPABASE_URL;
+ const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
+ const FINISHED_AFTER_MIN = 130; // a match is assumed final ~2h10m after kickoff
+ 
+-// World Cup is the active graded competition; extend as needed.
+-const SPORT_KEYS = ['soccer_fifa_world_cup'];
++// Premier League and EFL Championship are the active graded competitions.
++const SPORT_KEYS = ['soccer_epl', 'soccer_efl_champ'];
+ 
+ function httpGet(url) {
+   return new Promise((resolve, reject) => {
+@@ -42,7 +42,7 @@ function httpGet(url) {
+ }
+ 
+ const norm = s => (s ?? '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^a-z0-9]/g, '');
+ 
+ /** Fetches finished scores from The Odds API and indexes by team-pair + date. */
+ async function fetchScores() {
+diff --git a/ingestOdds.js b/ingestOdds.js
+index abc1234..def5678 100644
+--- a/ingestOdds.js
++++ b/ingestOdds.js
+@@ -37,11 +37,8 @@ const DRY_RUN        = process.argv.includes('--dry-run');
+ // Full list: https://the-odds-api.com/sports-odds-data/sports-apis.html
+ const LEAGUES = [
+-  { sportKey: 'soccer_fifa_world_cup',             name: 'FIFA World Cup',    country: 'International' },
+-  { sportKey: 'soccer_conmebol_copa_libertadores', name: 'Copa Libertadores', country: 'South America' },
+-  { sportKey: 'soccer_norway_eliteserien',         name: 'Eliteserien',       country: 'Norway'        },
+-  { sportKey: 'soccer_sweden_allsvenskan',         name: 'Allsvenskan',       country: 'Sweden'        },
+-  { sportKey: 'soccer_brazil_serie_b',             name: 'Brazil Serie B',    country: 'Brazil'        },
++  { sportKey: 'soccer_epl',       name: 'Premier League',   country: 'England' },
++  { sportKey: 'soccer_efl_champ', name: 'EFL Championship', country: 'England' },
+ ];
+diff --git a/postToX.js b/postToX.js
+index 98c1a9c..7b2efe6 100644
+--- a/postToX.js
++++ b/postToX.js
+@@ -10,8 +10,8 @@
+  * Signal tiers:
+- *   VALUE  — edge ≥ 2%   (⚡)
+- *   RUBY   — edge ≥ 8%   (◆) — scarce, elite-confidence signals
++ *   PRICING — pricing gap ≥ 2pp  (📊)
++ *   PRIME   — pricing gap ≥ 8pp  (◆) — scarce, high-confidence divergences
+  */
+ 
+-  const ruby    = isRuby(signal.detected_edge);
++  const prime   = isRuby(signal.detected_edge);
+ 
+-  const lines = ruby
++  const lines = prime
+     ? [
+-        `◆ *RUBY SIGNAL*`,
++        `◆ *PRIME SIGNAL*`,
+         ...
+-        `Edge: +${edgePct}%${mes}`,
++        `Pricing gap: +${edgePct}pp${mes}`,
+         ...
+-        `#MaxEdge #Ruby #ValueBet`,
++        `#MaxEdge #Prime`,
+       ]
+     : [
+-        `⚡ *VALUE SIGNAL*`,
++        `📊 *PRICING SIGNAL*`,
+         ...
+-        `Edge: +${edgePct}%${mes}`,
++        `Pricing gap: +${edgePct}pp${mes}`,
+         ...
+-        `#MaxEdge #ValueBet`,
++        `#MaxEdge`,
+       ];
+ 
+-    const label   = isRuby(signal.detected_edge) ? 'RUBY' : 'VALUE';
++    const label   = isRuby(signal.detected_edge) ? 'PRIME' : 'PRICING';
