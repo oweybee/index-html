@@ -1,0 +1,21 @@
+{
+  "name": "compute-engine",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "start": "ts-node engine/scheduler.ts",
+    "build": "tsc",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.43.0",
+    "axios": "^1.7.2",
+    "node-cron": "^3.0.3"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "@types/node-cron": "^3.0.11",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.4.5"
+  }
+}
