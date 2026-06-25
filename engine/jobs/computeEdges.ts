@@ -4,7 +4,9 @@ import { getBetfairBackPrices } from '../lib/betfairClient';
 import { devig } from '../lib/devig';
 import { getDixonColesProbabilities } from '../models/dixonColes';
 
-const TARGET_LEAGUES = ['epl', 'efl_championship'];
+// Phase 1 scope: World Cup 2026 active.
+// Flip to ['epl', 'efl_championship'] when the tournament ends.
+const TARGET_LEAGUES = ['fifa_world_cup_2026'];
 
 export async function runEdgeComputeCycle(): Promise<void> {
   const fixtures = await getOddsApiSnapshot(TARGET_LEAGUES);

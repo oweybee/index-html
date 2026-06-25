@@ -5,6 +5,7 @@ const BASE_URL = 'https://api.the-odds-api.com/v4';
 
 // Maps internal league slugs to The Odds API sport keys
 const LEAGUE_SPORT_KEYS: Record<string, string> = {
+  fifa_world_cup_2026: 'soccer_fifa_world_cup',
   epl: 'soccer_epl',
   efl_championship: 'soccer_efl_champ',
 };
