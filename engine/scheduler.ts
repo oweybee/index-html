@@ -1,26 +1,46 @@
 import cron from 'node-cron';
 import { runEdgeComputeCycle } from './jobs/computeEdges';
+import { discoverAndMapFixtures } from './jobs/discoverFixtures';
+import { ingestPredictions } from './jobs/ingestPredictions';
+import { ingestTeamStats } from './jobs/ingestTeamStats';
+import { ingestLineups } from './jobs/ingestLineups';
 
-let running = false;
-
-async function safeRun() {
-  if (running) return;
-  running = true;
+async function safe(name: string, fn: () => Promise<void>): Promise<void> {
   try {
-    await runEdgeComputeCycle();
+    await fn();
   } catch (err) {
-    console.error('runEdgeComputeCycle error:', err);
-  } finally {
-    running = false;
+    console.error(`[${name}] error:`, err);
   }
 }
 
-// Every 5 min: covers the 5h-to-1h pre-kickoff window
-cron.schedule('*/5 * * * *', safeRun);
+let edgeRunning = false;
 
-// Every minute: tighter polling for the final hour before kickoff.
-// The cycle itself skips fixtures with no Betfair market yet, so running
-// it every minute at low volume is cheap.
-cron.schedule('* * * * *', safeRun);
+async function runEdge() {
+  if (edgeRunning) return;
+  edgeRunning = true;
+  try {
+    await runEdgeComputeCycle();
+  } catch (err) {
+    console.error('[edge] error:', err);
+  } finally {
+    edgeRunning = false;
+  }
+}
 
-console.log('Edge compute scheduler started');
+// Every 30 min: fixture discovery, predictions (once per fixture), team stats (daily cadence)
+cron.schedule('*/30 * * * *', async () => {
+  await safe('discoverFixtures', discoverAndMapFixtures);
+  await safe('ingestPredictions', ingestPredictions);
+  await safe('ingestTeamStats', ingestTeamStats);
+});
+
+// Every 5 min: edge compute (5h-to-1h pre-kickoff window)
+cron.schedule('*/5 * * * *', runEdge);
+
+// Every 1 min: edge compute + lineups (final 90 min before kickoff)
+cron.schedule('* * * * *', async () => {
+  await runEdge();
+  await safe('ingestLineups', ingestLineups);
+});
+
+console.log('Engine scheduler started');
