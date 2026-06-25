@@ -53,6 +53,17 @@ export async function runEdgeComputeCycle(): Promise<void> {
       const signalsAgree =
         edgeKaunitz > 0 && edgeBetfair !== null && edgeBetfair > 0;
 
+      // Outcome is a longshot when fair probability < 1/3 and no positive edge
+      const isLongshot = pFairKaunitz < 1 / 3;
+
+      const tier = signalsAgree
+        ? 'RUBY'
+        : edgeKaunitz > 0
+        ? 'VALUE'
+        : isLongshot
+        ? 'LONGSHOT'
+        : null;
+
       return {
         outcome,
         p_cons: pCons,
@@ -62,7 +73,7 @@ export async function runEdgeComputeCycle(): Promise<void> {
         edge_betfair: edgeBetfair,
         bookmaker_count: allOdds.length,
         signals_agree: signalsAgree,
-        tier: signalsAgree ? 'RUBY' : edgeKaunitz > 0 ? 'VALUE' : null,
+        tier,
       };
     });
 
